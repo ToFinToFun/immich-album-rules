@@ -1,0 +1,11 @@
+[Unit]
+Description=Immich Auto Archive sync
+After=network-online.target immich-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/immich-auto-archive --sync --quiet
+User=root
+Group=root
+Nice=10

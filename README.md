@@ -31,16 +31,28 @@ immich-auto-archive
 
 Re-running `install.sh` updates the program files while preserving `/etc/immich-auto-archive`.
 
-## API keys
+## API key setup
 
-Each Immich user needs their own API key. Create it while logged in as that user and grant only:
+Each Immich user needs their **own** API key. The interactive menu includes this guide when you choose `Add / replace API key (guided)`.
 
-- `user.read`
-- `album.read`
-- `asset.read`
-- `asset.update`
+For each user:
 
-The interactive menu stores keys in `/etc/immich-auto-archive/keys/<user-id>.key` with mode `0600`. Keys are never stored in `config.json`.
+1. Sign in to the Immich web interface as that user.
+2. Click the profile icon in the top-right corner.
+3. Open **Account Settings -> API Keys**.
+4. Click **New API Key**.
+5. Name it `Immich Auto Archive`.
+6. Grant only these permissions:
+   - `user.read`
+   - `album.read`
+   - `asset.read`
+   - `asset.update`
+7. Create the key and copy it.
+8. Run `immich-auto-archive`, select that user, choose **Add / replace API key (guided)**, and paste the key when prompted.
+
+The key is validated against the selected Immich user before it is stored. Keys are saved in `/etc/immich-auto-archive/keys/<user-id>.key` with mode `0600` and are never stored in `config.json`.
+
+> If an album is reported as `not found (skipped)`, make sure that album is selected for backup in the Immich mobile app and that **Album Sync** is enabled. Auto Archive works with Immich server albums; it does not read Android/iOS folders directly.
 
 ## Commands
 
@@ -63,6 +75,8 @@ immich-auto-archive --refresh-users
 6. Bulk-updates those assets to `visibility=archive`.
 
 If multiple Immich albums have the same name, all matching albums are processed. Missing album names are skipped rather than treated as errors.
+
+If a user has **zero Immich server albums**, sync/dry-run shows a single Album Sync troubleshooting message instead of reporting every configured album as missing. The per-user menu also includes **Show detected Immich albums**, which lists the server albums visible to that user, their asset counts, and marks configured auto-archive targets with `[AUTO]`.
 
 ## Files installed
 
