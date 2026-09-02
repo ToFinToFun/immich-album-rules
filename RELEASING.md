@@ -2,12 +2,18 @@
 
 GitHub Actions handles releases through `.github/workflows/release.yml`.
 
-## Recommended: manual Release workflow
+## Release from ChatGPT / repository automation
 
-1. Update `VERSION` in `src/immich_auto_archive.py` to the version you want to publish and commit it to `main`.
-2. Open **Actions -> Release -> Run workflow** in GitHub.
-3. Enter the same version, for example `0.2.1` (the leading `v` is optional).
-4. Run the workflow.
+The file `.github/release-request` is a deliberate release trigger. Its `version=` value must match `VERSION` in `src/immich_auto_archive.py`.
+
+Changing the `request=` value and committing that file to `main` starts the Release workflow. This provides a safe way for repository automation to request a release without needing direct access to GitHub's Release API.
+
+Example:
+
+```text
+version=0.2.1
+request=2026-09-02T10:30:00Z
+```
 
 The workflow will:
 
@@ -20,6 +26,13 @@ The workflow will:
 - upload `immich-auto-archive-<version>-installer.sh` as the release asset
 
 GitHub automatically provides its normal **Source code (zip)** and **Source code (tar.gz)** downloads, so they are not uploaded separately.
+
+## Manual Release workflow
+
+1. Update `VERSION` in `src/immich_auto_archive.py` to the version you want to publish and commit it to `main`.
+2. Open **Actions -> Release -> Run workflow** in GitHub.
+3. Enter the same version, for example `0.2.1` (the leading `v` is optional).
+4. Run the workflow.
 
 ## Tag-driven release
 
