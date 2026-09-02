@@ -1,0 +1,5 @@
+# Release automation trigger.
+# Change the request value to start a release. The version must match
+# VERSION in src/immich_auto_archive.py.
+version=0.2.0
+request=not-triggered
