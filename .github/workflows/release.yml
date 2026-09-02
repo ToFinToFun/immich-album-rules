@@ -45,6 +45,13 @@ jobs:
           elif [[ "$REF_TYPE" == "tag" ]]; then
             TAG="$REF_NAME"
           else
+            REQUEST_TOKEN="$(awk -F= '$1 == "request" { print $2 }' .github/release-request | tail -n 1 | tr -d '[:space:]')"
+            if [[ -z "$REQUEST_TOKEN" || "$REQUEST_TOKEN" == "not-triggered" ]]; then
+              echo "Release request is not armed; nothing to publish."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
             REQUESTED="$(awk -F= '$1 == "version" { print $2 }' .github/release-request | tail -n 1 | tr -d '[:space:]')"
             if [[ -z "$REQUESTED" ]]; then
               echo "No version found in .github/release-request" >&2
@@ -76,18 +83,22 @@ jobs:
             exit 1
           fi
 
+          echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "asset=dist/immich-album-rules-${VERSION}-installer.sh" >> "$GITHUB_OUTPUT"
 
       - name: Run tests
+        if: steps.version.outputs.skip != 'true'
         run: python3 -m unittest discover -s tests -v
 
       - name: Build standalone installer
+        if: steps.version.outputs.skip != 'true'
         shell: bash
         run: bash scripts/build-release.sh "${{ steps.version.outputs.version }}"
 
       - name: Verify standalone installer payload
+        if: steps.version.outputs.skip != 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -99,7 +110,7 @@ jobs:
             "$TMP/immich-album-rules-${{ steps.version.outputs.version }}/src/immich_album_rules.py"
 
       - name: Create tag when needed
-        if: github.ref_type != 'tag'
+        if: steps.version.outputs.skip != 'true' && github.ref_type != 'tag'
         shell: bash
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -121,6 +132,7 @@ jobs:
           fi
 
       - name: Create or update GitHub Release
+        if: steps.version.outputs.skip != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -144,3 +156,18 @@ jobs:
               --generate-notes \
               "${EXTRA_ARGS[@]}"
           fi
+
+      - name: Reset ChatGPT release request
+        if: steps.version.outputs.skip != 'true' && github.event_name == 'push' && github.ref_type == 'branch'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sed -i 's/^request=.*/request=not-triggered/' .github/release-request
+          if git diff --quiet -- .github/release-request; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/release-request
+          git commit -m "Reset release request"
+          git push origin HEAD:main
