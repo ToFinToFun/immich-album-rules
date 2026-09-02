@@ -40,17 +40,20 @@ jobs:
           set -Eeuo pipefail
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            REQUESTED="$INPUT_VERSION"
+            TAG="${INPUT_VERSION#v}"
+            TAG="v${TAG}"
           elif [[ "$REF_TYPE" == "tag" ]]; then
-            REQUESTED="$REF_NAME"
+            TAG="$REF_NAME"
           else
-            REQUESTED="$(sed -n 's/^version=//p' .github/release-request | head -n 1)"
+            REQUESTED="$(awk -F= '$1 == "version" { print $2 }' .github/release-request | tail -n 1 | tr -d '[:space:]')"
+            if [[ -z "$REQUESTED" ]]; then
+              echo "No version found in .github/release-request" >&2
+              exit 1
+            fi
+            TAG="v${REQUESTED#v}"
           fi
 
-          TAG="${REQUESTED#v}"
-          TAG="v${TAG}"
           VERSION="${TAG#v}"
-
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid release version: $VERSION" >&2
             exit 1
@@ -60,22 +63,22 @@ jobs:
           import re
           from pathlib import Path
 
-          text = Path('src/immich_auto_archive.py').read_text(encoding='utf-8')
+          text = Path('src/immich_album_rules.py').read_text(encoding='utf-8')
           match = re.search(r'^VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', text, re.MULTILINE)
           if not match:
-              raise SystemExit('Could not read VERSION from src/immich_auto_archive.py')
+              raise SystemExit('Could not read VERSION from src/immich_album_rules.py')
           print(match.group(1))
           PY
           )"
 
           if [[ "$SOURCE_VERSION" != "$VERSION" ]]; then
-            echo "Release $TAG does not match source VERSION=$SOURCE_VERSION" >&2
+            echo "Release tag $TAG does not match source VERSION=$SOURCE_VERSION" >&2
             exit 1
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "asset=dist/immich-auto-archive-${VERSION}-installer.sh" >> "$GITHUB_OUTPUT"
+          echo "asset=dist/immich-album-rules-${VERSION}-installer.sh" >> "$GITHUB_OUTPUT"
 
       - name: Run tests
         run: python3 -m unittest discover -s tests -v
@@ -93,7 +96,7 @@ jobs:
           INSTALLER="${{ steps.version.outputs.asset }}"
           bash "$INSTALLER" --extract "$TMP"
           grep -F 'VERSION = "${{ steps.version.outputs.version }}"' \
-            "$TMP/immich-auto-archive-${{ steps.version.outputs.version }}/src/immich_auto_archive.py"
+            "$TMP/immich-album-rules-${{ steps.version.outputs.version }}/src/immich_album_rules.py"
 
       - name: Create tag when needed
         if: github.ref_type != 'tag'
@@ -137,7 +140,7 @@ jobs:
             fi
             gh release create "$TAG" "$ASSET" \
               --verify-tag \
-              --title "Immich Auto Archive $TAG" \
+              --title "Immich Album Rules $TAG" \
               --generate-notes \
               "${EXTRA_ARGS[@]}"
           fi
