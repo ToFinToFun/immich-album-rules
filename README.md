@@ -1,14 +1,42 @@
 # Immich Auto Archive
 
-Automatically archive assets from selected Immich albums so they remain available in albums and Archive, but stay out of the main timeline.
+Automatically apply visibility rules to assets in selected Immich albums so phone folders such as Screenshots, Downloads, Messenger or WhatsApp can be kept out of the main photo timeline.
 
-The tool is designed to live **outside Immich's application directories**, so normal Immich upgrades do not overwrite its program, configuration, API keys, or systemd timer.
+Version **0.2.0** supports three per-album actions:
 
-## Current status
+- **Archive** — keep assets in the album but hide them from the main timeline.
+- **Locked** — move matching assets into Immich Locked Folder.
+- **Timeline** — restore matching archived assets to the normal timeline.
 
-Early working release intended first for testing on an Immich Community Scripts / Proxmox LXC installation. It also supports local `immich-admin` installations and common Docker container names for user discovery.
+The tool lives **outside Immich's application directories**, so normal Immich upgrades do not overwrite its program, configuration, API keys, or systemd timer.
 
-## Default albums for newly discovered users
+## Important Locked Folder limitation
+
+Immich treats Locked Folder differently from Archive. When an asset is set to `locked`, Immich itself removes that asset from **all albums**. Immich also requires an elevated interactive session to search Locked Folder; a normal API key cannot browse those assets.
+
+Therefore a `Locked` rule is intentionally treated as a **one-way album -> Locked Folder action**:
+
+- Timeline assets in the source album can be moved to Locked.
+- Archived assets still in the source album can be moved to Locked.
+- Once locked, Immich removes them from the source album.
+- Changing/removing the rule later does **not** automatically restore assets already in Locked Folder.
+- Existing locked assets must be unlocked/restored from inside Immich.
+
+The interactive menu warns before a Locked rule is created or selected.
+
+## Rule priority
+
+If the same asset is present in multiple source albums with conflicting rules, the safer visibility wins:
+
+```text
+Locked > Archive > Timeline
+```
+
+The decision is made before any changes are sent to Immich.
+
+## Default rules for newly discovered users
+
+All built-in defaults use **Archive**:
 
 1. Screenshots
 2. Download
@@ -19,9 +47,15 @@ Early working release intended first for testing on an Immich Community Scripts 
 7. Messenger
 8. Messages
 
-Each user gets an independent copy of the default list and can then be edited without affecting other users.
+Every user gets an independent copy of the defaults and can then edit, add, remove, or change actions without affecting other users.
 
-## Install
+## Upgrade from v0.1.x
+
+Upgrade is automatic. Existing configuration and API keys are preserved. Every existing v0.1.x album entry is migrated to an **Archive** rule, so current behavior does not change unexpectedly.
+
+## Install / upgrade
+
+From an extracted source tree:
 
 ```bash
 sudo ./install.sh
@@ -33,7 +67,7 @@ Re-running `install.sh` updates the program files while preserving `/etc/immich-
 
 ## API key setup
 
-Each Immich user needs their **own** API key. The interactive menu includes this guide when you choose `Add / replace API key (guided)`.
+Each Immich user needs their **own** API key. The same key supports Archive, Locked and Timeline rules.
 
 For each user:
 
@@ -42,41 +76,63 @@ For each user:
 3. Open **Account Settings -> API Keys**.
 4. Click **New API Key**.
 5. Name it `Immich Auto Archive`.
-6. Grant only these permissions:
+6. Grant only:
    - `user.read`
    - `album.read`
    - `asset.read`
    - `asset.update`
-7. Create the key and copy it.
-8. Run `immich-auto-archive`, select that user, choose **Add / replace API key (guided)**, and paste the key when prompted.
+7. Create and copy the key.
+8. Run `immich-auto-archive`, select the user, and choose **Add / replace API key (guided)**.
 
-The key is validated against the selected Immich user before it is stored. Keys are saved in `/etc/immich-auto-archive/keys/<user-id>.key` with mode `0600` and are never stored in `config.json`.
+Keys are validated against the selected Immich user and stored in `/etc/immich-auto-archive/keys/<user-id>.key` with mode `0600`. They are never stored in `config.json`.
 
-> If an album is reported as `not found (skipped)`, make sure that album is selected for backup in the Immich mobile app and that **Album Sync** is enabled. Auto Archive works with Immich server albums; it does not read Android/iOS folders directly.
+## Album Sync prerequisite
+
+The tool works with **Immich server albums**, not Android/iOS folders directly. If photos are uploaded but the expected server albums do not exist, enable **Backup album synchronization / Album Sync** in the Immich mobile app and use **Reorganize into album** for already uploaded photos.
+
+When zero server albums are found, the tool prints this guidance instead of repeating `not found` for every configured rule.
+
+## Interactive management
+
+```bash
+immich-auto-archive
+```
+
+The menu supports:
+
+- automatic Immich user discovery
+- API-key status per user
+- add/change/remove rules per user
+- Archive / Locked / Timeline action selection
+- reset user rules to defaults
+- list detected Immich server albums and their configured action
+- per-user sync and dry-run
+- global sync and dry-run
+- enable/disable a user's automatic rules
+- logs, status and doctor checks
 
 ## Commands
 
 ```bash
 immich-auto-archive              # interactive menu
-immich-auto-archive --sync       # sync all users now
-immich-auto-archive --dry-run    # show changes without archiving
+immich-auto-archive --sync       # apply all rules now
+immich-auto-archive --dry-run    # show planned visibility changes
 immich-auto-archive --status     # configuration + timer status
 immich-auto-archive --doctor     # installation/API checks
 immich-auto-archive --refresh-users
 ```
 
-## How it works
+## How synchronization works
 
-1. Discovers Immich users using `immich-admin list-users` (or `docker exec ... immich-admin list-users`).
-2. Gives newly discovered users the configured default album list.
-3. For each configured user with an API key, finds matching Immich albums.
-4. Searches only `timeline` assets in each album.
-5. Filters results to assets owned by that user, which avoids modifying another user's files in shared albums.
-6. Bulk-updates those assets to `visibility=archive`.
+1. Discovers users with `immich-admin list-users` (or a supported Docker container).
+2. Uses each user's own API key.
+3. Finds matching Immich server albums.
+4. Reads only that user's assets from those albums.
+5. Evaluates Timeline and Archive assets and builds one desired visibility plan.
+6. Resolves conflicts with `Locked > Archive > Timeline`.
+7. Applies bulk visibility changes through Immich's API.
 
-If multiple Immich albums have the same name, all matching albums are processed. Missing album names are skipped rather than treated as errors.
-
-If a user has **zero Immich server albums**, sync/dry-run shows a single Album Sync troubleshooting message instead of reporting every configured album as missing. The per-user menu also includes **Show detected Immich albums**, which lists the server albums visible to that user, their asset counts, and marks configured auto-archive targets with `[AUTO]`.
+Shared albums are protected: assets owned by somebody else are never changed.
 
 ## Files installed
 
@@ -89,7 +145,7 @@ If a user has **zero Immich server albums**, sync/dry-run shows a single Album S
 /etc/systemd/system/immich-auto-archive.timer
 ```
 
-This deliberately avoids `/opt/immich`, which Community Scripts updates in place.
+This deliberately avoids `/opt/immich`.
 
 ## Uninstall
 
@@ -101,10 +157,12 @@ sudo ./uninstall.sh --purge  # remove everything
 ## Safety
 
 - No direct database writes.
-- No files are moved or deleted.
-- Only asset visibility changes from `timeline` to `archive`.
-- `--dry-run` is provided for first-run validation.
-- API keys are checked against the selected Immich user before being accepted.
+- No media files are deleted.
+- No media files are physically moved by this tool.
+- Only Immich visibility state is changed through the official API.
+- API keys are checked against the selected user before being accepted.
+- `--dry-run` is available before real changes.
+- Locked Folder behavior is controlled by Immich itself and is clearly warned about.
 
 ## License
 
