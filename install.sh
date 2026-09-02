@@ -32,18 +32,18 @@ install -d -m 0700 "$CONFIG_DIR" "$CONFIG_DIR/keys"
 if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
   cat > "$CONFIG_DIR/config.json" <<'JSON'
 {
-  "version": 1,
+  "version": 2,
   "server_url": "http://127.0.0.1:2283/api",
   "sync_interval_minutes": 5,
-  "default_albums": [
-    "Screenshots",
-    "Download",
-    "WhatsApp",
-    "WhatsApp Images",
-    "WhatsApp Video",
-    "Facebook",
-    "Messenger",
-    "Messages"
+  "default_rules": [
+    {"album": "Screenshots", "action": "archive"},
+    {"album": "Download", "action": "archive"},
+    {"album": "WhatsApp", "action": "archive"},
+    {"album": "WhatsApp Images", "action": "archive"},
+    {"album": "WhatsApp Video", "action": "archive"},
+    {"album": "Facebook", "action": "archive"},
+    {"album": "Messenger", "action": "archive"},
+    {"album": "Messages", "action": "archive"}
   ],
   "users": {}
 }
@@ -63,7 +63,7 @@ install -m 0644 "$SOURCE_DIR/systemd/${APP}.timer" "$TIMER"
 systemctl daemon-reload
 systemctl enable --now "${APP}.timer"
 
-# Populate users, but don't fail install solely because Immich is temporarily stopped.
+# Loading the program performs safe config migration from v0.1.x -> v0.2.0.
 "$BIN" --refresh-users || true
 
 echo
@@ -73,4 +73,4 @@ echo "  Doctor:  $APP --doctor"
 echo "  Dry-run: $APP --dry-run"
 echo "  Sync:    $APP --sync"
 echo
-echo "Configuration and keys are preserved when install.sh is run again."
+echo "Existing configuration and API keys are preserved and v0.1.x album rules are migrated to Archive rules."
