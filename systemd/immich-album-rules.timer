@@ -1,12 +1,12 @@
 [Unit]
-Description=Run Immich Auto Archive every 5 minutes
+Description=Run Immich Album Rules every 5 minutes
 
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=5min
 AccuracySec=30s
 Persistent=true
-Unit=immich-auto-archive.service
+Unit=immich-album-rules.service
 
 [Install]
 WantedBy=timers.target

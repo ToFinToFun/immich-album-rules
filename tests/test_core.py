@@ -9,10 +9,10 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location("iaa", Path(__file__).parents[1] / "src" / "immich_auto_archive.py")
-iaa = importlib.util.module_from_spec(SPEC)
-sys.modules["iaa"] = iaa
-SPEC.loader.exec_module(iaa)
+SPEC = importlib.util.spec_from_file_location("iar", Path(__file__).parents[1] / "src" / "immich_album_rules.py")
+iar = importlib.util.module_from_spec(SPEC)
+sys.modules["iar"] = iar
+SPEC.loader.exec_module(iar)
 
 
 class FakeImmich(BaseHTTPRequestHandler):
@@ -90,31 +90,31 @@ class CoreTests(unittest.TestCase):
 
     def _user_cfg(self, td, rules=None):
         cfgfile = Path(td) / "config.json"
-        cfg = iaa.ensure_config(cfgfile)
+        cfg = iar.ensure_config(cfgfile)
         cfg["server_url"] = self.base
         cfg["users"] = {
             FakeImmich.key_user: {
                 "name": "Jerry",
                 "email": "j@example.test",
                 "enabled": True,
-                "rules": rules if rules is not None else [dict(r) for r in iaa.DEFAULT_RULES],
+                "rules": rules if rules is not None else [dict(r) for r in iar.DEFAULT_RULES],
             }
         }
-        iaa.save_config(cfg, cfgfile)
-        iaa.write_key(FakeImmich.key_user, "good-key", cfgfile)
-        user = iaa.DiscoveredUser(FakeImmich.key_user, "j@example.test", "Jerry")
+        iar.save_config(cfg, cfgfile)
+        iar.write_key(FakeImmich.key_user, "good-key", cfgfile)
+        user = iar.DiscoveredUser(FakeImmich.key_user, "j@example.test", "Jerry")
         return cfgfile, cfg, user
 
     def test_default_rule_order_and_actions(self):
-        self.assertEqual([r["album"] for r in iaa.DEFAULT_RULES], [
+        self.assertEqual([r["album"] for r in iar.DEFAULT_RULES], [
             "Screenshots", "Download", "WhatsApp", "WhatsApp Images",
             "WhatsApp Video", "Facebook", "Messenger", "Messages"
         ])
-        self.assertTrue(all(r["action"] == "archive" for r in iaa.DEFAULT_RULES))
+        self.assertTrue(all(r["action"] == "archive" for r in iar.DEFAULT_RULES))
 
     def test_parse_users(self):
         text = """Initializing Immich v3\n[\n { id: '11111111-1111-4111-8111-111111111111', email: 'a@b', name: 'A', isAdmin: true, deletedAt: null, },\n]"""
-        users = iaa._parse_immich_admin_users(text)
+        users = iar._parse_immich_admin_users(text)
         self.assertEqual(len(users), 1)
         self.assertEqual(users[0].name, "A")
         self.assertTrue(users[0].is_admin)
@@ -133,7 +133,7 @@ class CoreTests(unittest.TestCase):
                     }
                 }
             }))
-            cfg = iaa.ensure_config(cfgfile)
+            cfg = iar.ensure_config(cfgfile)
             self.assertEqual(cfg["version"], 2)
             self.assertEqual(cfg["default_rules"], [
                 {"album": "Screenshots", "action": "archive"},
@@ -151,7 +151,7 @@ class CoreTests(unittest.TestCase):
             (FakeImmich.asset_a, FakeImmich.key_user),
             (FakeImmich.other_asset, "someone-else"),
         ]
-        api = iaa.ImmichApi(self.base, "good-key")
+        api = iar.ImmichApi(self.base, "good-key")
         ids = api.asset_ids_for_album_visibility(FakeImmich.album_a, FakeImmich.key_user, "timeline")
         self.assertEqual(ids, [FakeImmich.asset_a])
         count = api.set_visibility(ids, "locked")
@@ -164,7 +164,7 @@ class CoreTests(unittest.TestCase):
         FakeImmich.assets[(FakeImmich.album_a, "archive")] = [(asset_b, FakeImmich.key_user)]
         with tempfile.TemporaryDirectory() as td:
             cfgfile, cfg, user = self._user_cfg(td, [{"album": "Screenshots", "action": "locked"}])
-            result = iaa.sync_user(cfg, user, config_file=cfgfile, verbose=False)
+            result = iar.sync_user(cfg, user, config_file=cfgfile, verbose=False)
             self.assertEqual(result.changed, 2)
             self.assertEqual(result.by_action["locked"], 2)
             self.assertEqual(FakeImmich.updates, [((FakeImmich.asset_a, asset_b), "locked")])
@@ -174,7 +174,7 @@ class CoreTests(unittest.TestCase):
         FakeImmich.assets[(FakeImmich.album_a, "archive")] = [(FakeImmich.asset_a, FakeImmich.key_user)]
         with tempfile.TemporaryDirectory() as td:
             cfgfile, cfg, user = self._user_cfg(td, [{"album": "Screenshots", "action": "timeline"}])
-            result = iaa.sync_user(cfg, user, config_file=cfgfile, verbose=False)
+            result = iar.sync_user(cfg, user, config_file=cfgfile, verbose=False)
             self.assertEqual(result.changed, 1)
             self.assertEqual(FakeImmich.updates, [((FakeImmich.asset_a,), "timeline")])
 
@@ -182,7 +182,7 @@ class CoreTests(unittest.TestCase):
         FakeImmich.assets[(FakeImmich.album_a, "archive")] = [(FakeImmich.asset_a, FakeImmich.key_user)]
         with tempfile.TemporaryDirectory() as td:
             cfgfile, cfg, user = self._user_cfg(td, [{"album": "Screenshots", "action": "locked"}])
-            result = iaa.sync_user(cfg, user, config_file=cfgfile, verbose=False)
+            result = iar.sync_user(cfg, user, config_file=cfgfile, verbose=False)
             self.assertEqual(result.changed, 1)
             self.assertEqual(FakeImmich.updates, [((FakeImmich.asset_a,), "locked")])
 
@@ -199,7 +199,7 @@ class CoreTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as td:
             cfgfile, cfg, user = self._user_cfg(td, rules)
-            result = iaa.sync_user(cfg, user, config_file=cfgfile, verbose=False)
+            result = iar.sync_user(cfg, user, config_file=cfgfile, verbose=False)
             self.assertEqual(result.conflicts, 1)
             self.assertEqual(result.changed, 1)
             self.assertEqual(FakeImmich.updates, [((FakeImmich.asset_a,), "locked")])
@@ -208,7 +208,7 @@ class CoreTests(unittest.TestCase):
         FakeImmich.assets[(FakeImmich.album_a, "timeline")] = [(FakeImmich.asset_a, FakeImmich.key_user)]
         with tempfile.TemporaryDirectory() as td:
             cfgfile, cfg, user = self._user_cfg(td, [])
-            result = iaa.sync_user(cfg, user, config_file=cfgfile, verbose=False)
+            result = iar.sync_user(cfg, user, config_file=cfgfile, verbose=False)
             self.assertEqual(result.changed, 0)
             self.assertEqual(FakeImmich.updates, [])
 
@@ -218,7 +218,7 @@ class CoreTests(unittest.TestCase):
             cfgfile, cfg, user = self._user_cfg(td)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                result = iaa.sync_user(cfg, user, dry_run=True, config_file=cfgfile, verbose=True)
+                result = iar.sync_user(cfg, user, dry_run=True, config_file=cfgfile, verbose=True)
             output = buf.getvalue()
             self.assertTrue(result.no_server_albums)
             self.assertIn("No Immich server albums found", output)
@@ -240,7 +240,7 @@ class CoreTests(unittest.TestCase):
             cfgfile, cfg, user = self._user_cfg(td, rules)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                iaa.show_detected_albums(cfg, user, cfgfile)
+                iar.show_detected_albums(cfg, user, cfgfile)
             output = buf.getvalue()
             self.assertIn("[ARCH] Screenshots (12 assets)", output)
             self.assertIn("[LOCK] Private (3 assets)", output)
@@ -250,11 +250,11 @@ class CoreTests(unittest.TestCase):
     def test_key_storage_permissions(self):
         with tempfile.TemporaryDirectory() as td:
             cfgfile = Path(td) / "config.json"
-            iaa.ensure_config(cfgfile)
-            iaa.write_key(FakeImmich.key_user, "secret", cfgfile)
-            path = iaa.key_path(FakeImmich.key_user, cfgfile)
+            iar.ensure_config(cfgfile)
+            iar.write_key(FakeImmich.key_user, "secret", cfgfile)
+            path = iar.key_path(FakeImmich.key_user, cfgfile)
             self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
-            self.assertEqual(iaa.read_key(FakeImmich.key_user, cfgfile), "secret")
+            self.assertEqual(iar.read_key(FakeImmich.key_user, cfgfile), "secret")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Immich Auto Archive - apply automatic visibility rules to Immich albums.
+"""Immich Album Rules - apply automatic visibility rules to Immich albums.
 
 Designed to be installed outside Immich's own application tree so normal Immich
 upgrades do not overwrite it.
@@ -22,7 +22,7 @@ from typing import Any, Iterable
 
 VERSION = "0.2.0"
 CONFIG_VERSION = 2
-DEFAULT_CONFIG_DIR = Path(os.environ.get("IMMICH_AUTO_ARCHIVE_CONFIG_DIR", "/etc/immich-auto-archive"))
+DEFAULT_CONFIG_DIR = Path(os.environ.get("IMMICH_ALBUM_RULES_CONFIG_DIR", os.environ.get("IMMICH_AUTO_ARCHIVE_CONFIG_DIR", "/etc/immich-album-rules")))
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
 DEFAULT_SERVER_URL = "http://127.0.0.1:2283/api"
 DEFAULT_ALBUMS = [
@@ -602,7 +602,7 @@ def print_api_key_guide(user: DiscoveredUser) -> None:
     print("2. Click the profile icon in the top-right corner.")
     print("3. Open: Account Settings -> API Keys")
     print("4. Click: New API Key")
-    print("5. Name it: Immich Auto Archive")
+    print("5. Name it: Immich Album Rules")
     print("6. Grant ONLY these permissions:")
     for perm in REQUIRED_KEY_PERMISSIONS:
         print(f"     - {perm}")
@@ -641,7 +641,7 @@ def show_detected_albums(cfg: dict[str, Any], user: DiscoveredUser, config_file:
     api_key = read_key(user.id, config_file)
     if not api_key:
         print("No API key is configured for this user.")
-        print("Add an API key first so Immich Auto Archive can read their server albums.")
+        print("Add an API key first so Immich Album Rules can read their server albums.")
         return
 
     try:
@@ -694,7 +694,7 @@ def manage_user(cfg: dict[str, Any], user: DiscoveredUser, config_file: Path) ->
         entry = cfg["users"][user.id]
         entry["rules"] = _normalize_rules(entry.get("rules", []))
         clear()
-        print(f"IMMICH AUTO ARCHIVE v{VERSION}")
+        print(f"IMMICH ALBUM RULES v{VERSION}")
         print("=" * 64)
         print(user.label)
         print(f"API key:      {format_key_status(cfg, user, config_file)}")
@@ -743,7 +743,7 @@ def manage_user(cfg: dict[str, Any], user: DiscoveredUser, config_file: Path) ->
         elif choice == "2":
             if input("Remove the locally stored API key? [y/N]: ").strip().lower() == "y":
                 remove_key(user.id, config_file)
-                print("API key removed from Immich Auto Archive.")
+                print("API key removed from Immich Album Rules.")
             pause()
         elif choice == "3":
             name = input("Album name to add: ").strip()
@@ -860,7 +860,7 @@ def edit_defaults(cfg: dict[str, Any], config_file: Path) -> None:
 
 
 def show_status(cfg: dict[str, Any], users: list[DiscoveredUser], config_file: Path) -> None:
-    print("IMMICH AUTO ARCHIVE STATUS")
+    print("IMMICH ALBUM RULES STATUS")
     print("=" * 70)
     print(f"Version: {VERSION}   Config schema: {cfg.get('version')}")
     print(f"Server: {cfg['server_url']}")
@@ -873,12 +873,12 @@ def show_status(cfg: dict[str, Any], users: list[DiscoveredUser], config_file: P
         print(f"- {user.label}: {status}, {enabled}, {len(entry.get('rules', []))} rules")
     if shutil.which("systemctl"):
         print("\nTimer:")
-        subprocess.run(["systemctl", "status", "immich-auto-archive.timer", "--no-pager"], check=False)
+        subprocess.run(["systemctl", "status", "immich-album-rules.timer", "--no-pager"], check=False)
 
 
 def doctor(cfg: dict[str, Any], config_file: Path) -> int:
     failures = 0
-    print("Immich Auto Archive doctor")
+    print("Immich Album Rules doctor")
     print("=" * 60)
     print(f"Version: {VERSION}")
     print(f"Config:  {config_file} (schema {cfg.get('version')})")
@@ -904,7 +904,7 @@ def doctor(cfg: dict[str, Any], config_file: Path) -> int:
         print("API:     SKIP (no user API keys configured yet)")
 
     if shutil.which("systemctl"):
-        proc = subprocess.run(["systemctl", "is-enabled", "immich-auto-archive.timer"], text=True, capture_output=True)
+        proc = subprocess.run(["systemctl", "is-enabled", "immich-album-rules.timer"], text=True, capture_output=True)
         enabled = proc.stdout.strip()
         print(f"Timer:   {enabled or 'not installed'}")
     else:
@@ -917,7 +917,7 @@ def logs() -> None:
     if not shutil.which("journalctl"):
         print("journalctl is not available on this system.")
         return
-    subprocess.run(["journalctl", "-u", "immich-auto-archive.service", "-n", "100", "--no-pager"], check=False)
+    subprocess.run(["journalctl", "-u", "immich-album-rules.service", "-n", "100", "--no-pager"], check=False)
 
 
 def menu(cfg: dict[str, Any], config_file: Path) -> int:
@@ -928,7 +928,7 @@ def menu(cfg: dict[str, Any], config_file: Path) -> int:
             print(f"ERROR: {exc}")
             return 1
         clear()
-        print(f"IMMICH AUTO ARCHIVE v{VERSION}")
+        print(f"IMMICH ALBUM RULES v{VERSION}")
         print("=" * 76)
         print(f"Immich: {cfg['server_url']}   User discovery: {source}")
         print("Rules: Archive / Locked / Timeline")
@@ -1004,7 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"ERROR [{result.label}]: {result.error}")
             total = sum(r.would_change if args.dry_run else r.changed for r in results)
             if total:
-                print(f"Immich Auto Archive: {total} asset visibility changes {'planned' if args.dry_run else 'applied'}.")
+                print(f"Immich Album Rules: {total} asset visibility changes {'planned' if args.dry_run else 'applied'}.")
             return 1 if errors else 0
         return print_summary(results, args.dry_run)
     return menu(cfg, args.config)
