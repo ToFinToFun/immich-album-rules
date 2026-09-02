@@ -5,7 +5,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
 REQUESTED_VERSION="${1:-}"
 
-SOURCE_VERSION="$(python3 - "$ROOT/src/immich_auto_archive.py" <<'PY'
+SOURCE_VERSION="$(python3 - "$ROOT/src/immich_album_rules.py" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -13,7 +13,7 @@ from pathlib import Path
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 match = re.search(r'^VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', text, re.MULTILINE)
 if not match:
-    raise SystemExit("Could not read VERSION from src/immich_auto_archive.py")
+    raise SystemExit("Could not read VERSION from src/immich_album_rules.py")
 print(match.group(1))
 PY
 )"
@@ -33,7 +33,7 @@ mkdir -p "$DIST"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-PKG_NAME="immich-auto-archive-$VERSION"
+PKG_NAME="immich-album-rules-$VERSION"
 PKG_DIR="$WORK/$PKG_NAME"
 mkdir -p "$PKG_DIR"
 
@@ -43,19 +43,19 @@ cp -a "$ROOT/src" "$ROOT/systemd" "$PKG_DIR/"
 tar -czf "$WORK/payload.tar.gz" -C "$WORK" "$PKG_NAME"
 
 INSTALLER="$DIST/${PKG_NAME}-installer.sh"
-cat > "$INSTALLER" <<EOF
+cat > "$INSTALLER" <<EOF_INSTALLER
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP="immich-auto-archive"
+APP="immich-album-rules"
 VERSION="$VERSION"
-PACKAGE="immich-auto-archive-$VERSION"
+PACKAGE="immich-album-rules-$VERSION"
 
 extract_payload() {
   local destination="\$1"
   local payload_line
   mkdir -p "\$destination"
-  payload_line="\$(awk '/^__IMMICH_AUTO_ARCHIVE_PAYLOAD__\$/ { print NR + 1; exit }' "\$0")"
+  payload_line="\$(awk '/^__IMMICH_ALBUM_RULES_PAYLOAD__\$/ { print NR + 1; exit }' "\$0")"
   if [[ -z "\$payload_line" ]]; then
     echo "ERROR: Installer payload marker not found." >&2
     exit 1
@@ -86,8 +86,8 @@ extract_payload "\$TMP"
 bash "\$TMP/\$PACKAGE/install.sh"
 exit 0
 
-__IMMICH_AUTO_ARCHIVE_PAYLOAD__
-EOF
+__IMMICH_ALBUM_RULES_PAYLOAD__
+EOF_INSTALLER
 
 base64 "$WORK/payload.tar.gz" >> "$INSTALLER"
 chmod 0755 "$INSTALLER"
