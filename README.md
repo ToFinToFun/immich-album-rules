@@ -1,14 +1,29 @@
-# Immich Auto Archive
+# Immich Album Rules
 
-Automatically apply visibility rules to assets in selected Immich albums so phone folders such as Screenshots, Downloads, Messenger or WhatsApp can be kept out of the main photo timeline.
+Automatically apply visibility rules to assets in selected Immich albums.
+
+Immich Album Rules is useful for phone-synced folders such as Screenshots, Downloads, Messenger or WhatsApp that should not necessarily remain in the main Immich timeline.
 
 Version **0.2.0** supports three per-album actions:
 
-- **Archive** — keep assets in the album but hide them from the main timeline.
+- **Archive** — keep matching assets in the album but hide them from the main timeline.
 - **Locked** — move matching assets into Immich Locked Folder.
 - **Timeline** — restore matching archived assets to the normal timeline.
 
-The tool lives **outside Immich's application directories**, so normal Immich upgrades do not overwrite its program, configuration, API keys, or systemd timer.
+The project was previously named **Immich Auto Archive**. Version 0.2.0 renames it to **Immich Album Rules** because it now manages more than Archive visibility.
+
+## Upgrade from Immich Auto Archive
+
+The v0.2.0 installer automatically detects an existing `immich-auto-archive` installation and migrates it:
+
+- `/etc/immich-auto-archive` is moved to `/etc/immich-album-rules` when the new config directory does not already exist.
+- Existing API keys and per-user rules are preserved.
+- Old v0.1.x album entries are migrated to **Archive** rules.
+- The old `immich-auto-archive.timer` is disabled and replaced by `immich-album-rules.timer`.
+- The obsolete application directory and systemd units are removed.
+- `/usr/local/bin/immich-auto-archive` remains as a compatibility alias and prints a rename notice before running `immich-album-rules`.
+
+No API key needs to be recreated just because of the rename. An existing key named `Immich Auto Archive` in Immich can continue to be used.
 
 ## Important Locked Folder limitation
 
@@ -19,7 +34,7 @@ Therefore a `Locked` rule is intentionally treated as a **one-way album -> Locke
 - Timeline assets in the source album can be moved to Locked.
 - Archived assets still in the source album can be moved to Locked.
 - Once locked, Immich removes them from the source album.
-- Changing/removing the rule later does **not** automatically restore assets already in Locked Folder.
+- Changing or removing the rule later does **not** automatically restore assets already in Locked Folder.
 - Existing locked assets must be unlocked/restored from inside Immich.
 
 The interactive menu warns before a Locked rule is created or selected.
@@ -49,21 +64,17 @@ All built-in defaults use **Archive**:
 
 Every user gets an independent copy of the defaults and can then edit, add, remove, or change actions without affecting other users.
 
-## Upgrade from v0.1.x
-
-Upgrade is automatic. Existing configuration and API keys are preserved. Every existing v0.1.x album entry is migrated to an **Archive** rule, so current behavior does not change unexpectedly.
-
 ## Install / upgrade
 
 From an extracted source tree:
 
 ```bash
 sudo ./install.sh
-immich-auto-archive --doctor
-immich-auto-archive
+immich-album-rules --doctor
+immich-album-rules
 ```
 
-Re-running `install.sh` updates the program files while preserving `/etc/immich-auto-archive`.
+Re-running `install.sh` updates the program while preserving `/etc/immich-album-rules`.
 
 ## API key setup
 
@@ -75,16 +86,16 @@ For each user:
 2. Click the profile icon in the top-right corner.
 3. Open **Account Settings -> API Keys**.
 4. Click **New API Key**.
-5. Name it `Immich Auto Archive`.
+5. Name it `Immich Album Rules`.
 6. Grant only:
    - `user.read`
    - `album.read`
    - `asset.read`
    - `asset.update`
 7. Create and copy the key.
-8. Run `immich-auto-archive`, select the user, and choose **Add / replace API key (guided)**.
+8. Run `immich-album-rules`, select the user, and choose **Add / replace API key (guided)**.
 
-Keys are validated against the selected Immich user and stored in `/etc/immich-auto-archive/keys/<user-id>.key` with mode `0600`. They are never stored in `config.json`.
+Keys are validated against the selected Immich user and stored in `/etc/immich-album-rules/keys/<user-id>.key` with mode `0600`. They are never stored in `config.json`.
 
 ## Album Sync prerequisite
 
@@ -95,31 +106,20 @@ When zero server albums are found, the tool prints this guidance instead of repe
 ## Interactive management
 
 ```bash
-immich-auto-archive
+immich-album-rules
 ```
 
-The menu supports:
-
-- automatic Immich user discovery
-- API-key status per user
-- add/change/remove rules per user
-- Archive / Locked / Timeline action selection
-- reset user rules to defaults
-- list detected Immich server albums and their configured action
-- per-user sync and dry-run
-- global sync and dry-run
-- enable/disable a user's automatic rules
-- logs, status and doctor checks
+The menu supports automatic Immich user discovery, API-key status per user, add/change/remove rules, Archive/Locked/Timeline action selection, default resets, detected album listing, per-user/global sync and dry-run, enable/disable, logs, status and doctor checks.
 
 ## Commands
 
 ```bash
-immich-auto-archive              # interactive menu
-immich-auto-archive --sync       # apply all rules now
-immich-auto-archive --dry-run    # show planned visibility changes
-immich-auto-archive --status     # configuration + timer status
-immich-auto-archive --doctor     # installation/API checks
-immich-auto-archive --refresh-users
+immich-album-rules              # interactive menu
+immich-album-rules --sync       # apply all rules now
+immich-album-rules --dry-run    # show planned visibility changes
+immich-album-rules --status     # configuration + timer status
+immich-album-rules --doctor     # installation/API checks
+immich-album-rules --refresh-users
 ```
 
 ## How synchronization works
@@ -137,15 +137,15 @@ Shared albums are protected: assets owned by somebody else are never changed.
 ## Files installed
 
 ```text
-/opt/immich-auto-archive/                 application code
-/etc/immich-auto-archive/config.json      configuration
-/etc/immich-auto-archive/keys/            per-user API keys
-/usr/local/bin/immich-auto-archive        command
-/etc/systemd/system/immich-auto-archive.service
-/etc/systemd/system/immich-auto-archive.timer
+/opt/immich-album-rules/                 application code
+/etc/immich-album-rules/config.json      configuration
+/etc/immich-album-rules/keys/            per-user API keys
+/usr/local/bin/immich-album-rules        command
+/etc/systemd/system/immich-album-rules.service
+/etc/systemd/system/immich-album-rules.timer
 ```
 
-This deliberately avoids `/opt/immich`.
+This deliberately avoids Immich's own application directories.
 
 ## Uninstall
 
