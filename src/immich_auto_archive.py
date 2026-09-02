@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Immich Auto Archive - automatically archive assets from selected Immich albums.
+"""Immich Auto Archive - apply automatic visibility rules to Immich albums.
 
 Designed to be installed outside Immich's own application tree so normal Immich
 upgrades do not overwrite it.
@@ -16,14 +16,14 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-VERSION = "0.1.1-dev"
+VERSION = "0.2.0"
+CONFIG_VERSION = 2
 DEFAULT_CONFIG_DIR = Path(os.environ.get("IMMICH_AUTO_ARCHIVE_CONFIG_DIR", "/etc/immich-auto-archive"))
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
-DEFAULT_KEYS_DIR = DEFAULT_CONFIG_DIR / "keys"
 DEFAULT_SERVER_URL = "http://127.0.0.1:2283/api"
 DEFAULT_ALBUMS = [
     "Screenshots",
@@ -35,6 +35,11 @@ DEFAULT_ALBUMS = [
     "Messenger",
     "Messages",
 ]
+DEFAULT_RULES = [{"album": album, "action": "archive"} for album in DEFAULT_ALBUMS]
+ALLOWED_ACTIONS = ("archive", "locked", "timeline")
+ACTION_PRIORITY = {"timeline": 1, "archive": 2, "locked": 3}
+ACTION_LABEL = {"archive": "Archive", "locked": "Locked", "timeline": "Timeline"}
+ACTION_MARKER = {"archive": "ARCH", "locked": "LOCK", "timeline": "TIME"}
 REQUIRED_KEY_PERMISSIONS = ["user.read", "album.read", "asset.read", "asset.update"]
 
 
@@ -56,14 +61,68 @@ class DiscoveredUser:
         return self.name or self.email or self.id
 
 
+@dataclass
+class SyncResult:
+    user_id: str
+    label: str
+    changed: int = 0
+    would_change: int = 0
+    by_action: dict[str, int] = field(default_factory=lambda: {a: 0 for a in ALLOWED_ACTIONS})
+    missing_albums: list[str] = field(default_factory=list)
+    conflicts: int = 0
+    no_server_albums: bool = False
+    skipped: str | None = None
+    error: str | None = None
+
+
+def _rule(album: str, action: str = "archive") -> dict[str, str]:
+    action = str(action).lower().strip()
+    if action not in ALLOWED_ACTIONS:
+        action = "archive"
+    return {"album": str(album), "action": action}
+
+
+def _normalize_rules(value: Any) -> list[dict[str, str]]:
+    """Normalize legacy album lists and current rule dictionaries."""
+    rules: list[dict[str, str]] = []
+    seen: set[str] = set()
+    if not isinstance(value, list):
+        return rules
+    for item in value:
+        if isinstance(item, str):
+            album, action = item.strip(), "archive"
+        elif isinstance(item, dict):
+            album = str(item.get("album", "")).strip()
+            action = str(item.get("action", "archive")).lower().strip()
+        else:
+            continue
+        if not album or album in seen:
+            continue
+        if action not in ALLOWED_ACTIONS:
+            action = "archive"
+        seen.add(album)
+        rules.append(_rule(album, action))
+    return rules
+
+
 def default_config() -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": CONFIG_VERSION,
         "server_url": DEFAULT_SERVER_URL,
         "sync_interval_minutes": 5,
-        "default_albums": list(DEFAULT_ALBUMS),
+        "default_rules": [dict(rule) for rule in DEFAULT_RULES],
         "users": {},
     }
+
+
+def save_config(cfg: dict[str, Any], config_file: Path = DEFAULT_CONFIG_FILE) -> None:
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = config_file.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, config_file)
 
 
 def ensure_config(config_file: Path = DEFAULT_CONFIG_FILE) -> dict[str, Any]:
@@ -84,22 +143,53 @@ def ensure_config(config_file: Path = DEFAULT_CONFIG_FILE) -> dict[str, Any]:
     with config_file.open("r", encoding="utf-8") as fh:
         cfg = json.load(fh)
 
-    # Forward-compatible defaults.
-    base = default_config()
-    for key, value in base.items():
-        cfg.setdefault(key, value)
+    changed = False
+    cfg.setdefault("server_url", DEFAULT_SERVER_URL)
+    cfg.setdefault("sync_interval_minutes", 5)
     cfg.setdefault("users", {})
+
+    # v0.1.x -> v0.2.0 migration. Every old album rule meant Archive.
+    if "default_rules" not in cfg:
+        legacy_defaults = cfg.get("default_albums", DEFAULT_ALBUMS)
+        cfg["default_rules"] = _normalize_rules(legacy_defaults)
+        changed = True
+    else:
+        normalized = _normalize_rules(cfg.get("default_rules"))
+        if normalized != cfg.get("default_rules"):
+            cfg["default_rules"] = normalized
+            changed = True
+
+    if not cfg.get("default_rules"):
+        cfg["default_rules"] = [dict(rule) for rule in DEFAULT_RULES]
+        changed = True
+
+    for entry in cfg["users"].values():
+        if "rules" not in entry:
+            entry["rules"] = _normalize_rules(entry.get("albums", []))
+            changed = True
+        else:
+            normalized = _normalize_rules(entry.get("rules"))
+            if normalized != entry.get("rules"):
+                entry["rules"] = normalized
+                changed = True
+        if not entry.get("rules") and entry.get("albums"):
+            entry["rules"] = _normalize_rules(entry["albums"])
+            changed = True
+        entry.setdefault("enabled", True)
+        if "albums" in entry:
+            entry.pop("albums", None)
+            changed = True
+
+    if "default_albums" in cfg:
+        cfg.pop("default_albums", None)
+        changed = True
+    if cfg.get("version") != CONFIG_VERSION:
+        cfg["version"] = CONFIG_VERSION
+        changed = True
+
+    if changed:
+        save_config(cfg, config_file)
     return cfg
-
-
-def save_config(cfg: dict[str, Any], config_file: Path = DEFAULT_CONFIG_FILE) -> None:
-    config_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = config_file.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, indent=2, ensure_ascii=False)
-        fh.write("\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, config_file)
 
 
 def key_path(user_id: str, config_file: Path = DEFAULT_CONFIG_FILE) -> Path:
@@ -137,15 +227,13 @@ def _run(cmd: list[str], timeout: int = 30) -> str:
 
 
 def _parse_immich_admin_users(output: str) -> list[DiscoveredUser]:
-    """Parse current immich-admin list-users human-readable JS-ish output."""
     users: list[DiscoveredUser] = []
-    # Each object contains id/email/name; matching non-greedily avoids needing a JS parser.
     for block in re.findall(r"\{(.*?)\}", output, flags=re.S):
-        def field(name: str) -> str:
-            m = re.search(rf"\b{name}\s*:\s*'([^']*)'", block)
-            return m.group(1) if m else ""
+        def field_value(name: str) -> str:
+            match = re.search(rf"\b{name}\s*:\s*'([^']*)'", block)
+            return match.group(1) if match else ""
 
-        user_id = field("id")
+        user_id = field_value("id")
         if not user_id:
             continue
         deleted_match = re.search(r"\bdeletedAt\s*:\s*([^,\n]+)", block)
@@ -155,8 +243,8 @@ def _parse_immich_admin_users(output: str) -> list[DiscoveredUser]:
         users.append(
             DiscoveredUser(
                 id=user_id,
-                email=field("email"),
-                name=field("name"),
+                email=field_value("email"),
+                name=field_value("name"),
                 is_admin=bool(admin_match and admin_match.group(1) == "true"),
             )
         )
@@ -164,11 +252,6 @@ def _parse_immich_admin_users(output: str) -> list[DiscoveredUser]:
 
 
 def discover_users() -> tuple[list[DiscoveredUser], str]:
-    """Discover Immich users without an API key.
-
-    Prefers a local immich-admin binary (Community Scripts/LXC, native installs),
-    then tries common Docker container names.
-    """
     if shutil.which("immich-admin"):
         output = _run(["immich-admin", "list-users"], timeout=60)
         users = _parse_immich_admin_users(output)
@@ -199,7 +282,7 @@ def refresh_users(cfg: dict[str, Any], config_file: Path = DEFAULT_CONFIG_FILE) 
     users, source = discover_users()
     changed = False
     configured = cfg.setdefault("users", {})
-    defaults = cfg.get("default_albums") or list(DEFAULT_ALBUMS)
+    defaults = _normalize_rules(cfg.get("default_rules")) or [dict(rule) for rule in DEFAULT_RULES]
 
     for user in users:
         entry = configured.get(user.id)
@@ -208,7 +291,7 @@ def refresh_users(cfg: dict[str, Any], config_file: Path = DEFAULT_CONFIG_FILE) 
                 "name": user.name,
                 "email": user.email,
                 "enabled": True,
-                "albums": list(defaults),
+                "rules": [dict(rule) for rule in defaults],
             }
             changed = True
         else:
@@ -219,7 +302,9 @@ def refresh_users(cfg: dict[str, Any], config_file: Path = DEFAULT_CONFIG_FILE) 
                 entry["email"] = user.email
                 changed = True
             entry.setdefault("enabled", True)
-            entry.setdefault("albums", list(defaults))
+            if "rules" not in entry:
+                entry["rules"] = [dict(rule) for rule in defaults]
+                changed = True
 
     if changed:
         save_config(cfg, config_file)
@@ -263,7 +348,15 @@ class ImmichApi:
             raise AppError("Unexpected response from GET /albums")
         return data
 
-    def timeline_asset_ids_for_album(self, album_id: str, owner_id: str) -> list[str]:
+    def asset_ids_for_album_visibility(self, album_id: str, owner_id: str, visibility: str) -> list[str]:
+        """Return the owner's assets in an album for one non-locked visibility.
+
+        Locked assets deliberately are not queried: current Immich requires an
+        elevated session to search Locked Folder and removes locked assets from
+        all albums when they are locked.
+        """
+        if visibility == "locked":
+            raise AppError("Locked visibility cannot be queried with a normal API key")
         ids: list[str] = []
         page = 1
         while True:
@@ -272,7 +365,7 @@ class ImmichApi:
                 "/search/metadata",
                 {
                     "albumIds": [album_id],
-                    "visibility": "timeline",
+                    "visibility": visibility,
                     "page": page,
                     "size": 1000,
                 },
@@ -280,7 +373,6 @@ class ImmichApi:
             assets_block = (result or {}).get("assets", {})
             items = assets_block.get("items", []) or []
             for asset in items:
-                # Shared albums may contain another user's assets. Never change those.
                 if asset.get("ownerId") == owner_id:
                     asset_id = asset.get("id")
                     if asset_id:
@@ -294,12 +386,26 @@ class ImmichApi:
                 raise AppError(f"Unexpected pagination token from Immich: {next_page!r}")
         return ids
 
-    def archive_ids(self, ids: list[str], chunk_size: int = 500) -> int:
+    def manageable_assets_for_album(self, album_id: str, owner_id: str) -> dict[str, str]:
+        """Assets we can safely inspect with a normal API key.
+
+        Timeline and Archive are enough for Archive/Timeline rules and for moving
+        an album into Locked Folder. Locked assets are intentionally absent because
+        Immich removes them from albums and requires elevated auth to search them.
+        """
+        assets: dict[str, str] = {}
+        for visibility in ("timeline", "archive"):
+            for asset_id in self.asset_ids_for_album_visibility(album_id, owner_id, visibility):
+                assets[asset_id] = visibility
+        return assets
+
+    def set_visibility(self, ids: list[str], visibility: str, chunk_size: int = 500) -> int:
+        if visibility not in ALLOWED_ACTIONS:
+            raise AppError(f"Unsupported visibility: {visibility}")
         count = 0
         for start in range(0, len(ids), chunk_size):
             chunk = ids[start : start + chunk_size]
-            payload = {"ids": chunk, "visibility": "archive"}
-            # v3 uses PATCH. PUT remains as a compatibility fallback for v2-era servers.
+            payload = {"ids": chunk, "visibility": visibility}
             try:
                 self.request("PATCH", "/assets", payload)
             except AppError as exc:
@@ -309,17 +415,12 @@ class ImmichApi:
             count += len(chunk)
         return count
 
+    # Compatibility aliases for callers/tests from v0.1.x.
+    def timeline_asset_ids_for_album(self, album_id: str, owner_id: str) -> list[str]:
+        return self.asset_ids_for_album_visibility(album_id, owner_id, "timeline")
 
-@dataclass
-class SyncResult:
-    user_id: str
-    label: str
-    archived: int = 0
-    would_archive: int = 0
-    missing_albums: list[str] | None = None
-    no_server_albums: bool = False
-    skipped: str | None = None
-    error: str | None = None
+    def archive_ids(self, ids: list[str], chunk_size: int = 500) -> int:
+        return self.set_visibility(ids, "archive", chunk_size)
 
 
 def validate_api_key(cfg: dict[str, Any], user: DiscoveredUser, config_file: Path = DEFAULT_CONFIG_FILE) -> tuple[bool, str]:
@@ -335,6 +436,12 @@ def validate_api_key(cfg: dict[str, Any], user: DiscoveredUser, config_file: Pat
     return True, "valid"
 
 
+def _desired_action(existing: str | None, candidate: str) -> str:
+    if existing is None or ACTION_PRIORITY[candidate] > ACTION_PRIORITY[existing]:
+        return candidate
+    return existing
+
+
 def sync_user(
     cfg: dict[str, Any],
     user: DiscoveredUser,
@@ -344,7 +451,7 @@ def sync_user(
     verbose: bool = True,
 ) -> SyncResult:
     entry = cfg.get("users", {}).get(user.id, {})
-    result = SyncResult(user_id=user.id, label=user.label, missing_albums=[])
+    result = SyncResult(user_id=user.id, label=user.label)
     if not entry.get("enabled", True):
         result.skipped = "disabled"
         return result
@@ -375,31 +482,63 @@ def sync_user(
         for album in albums:
             by_name.setdefault(album.get("albumName", ""), []).append(album)
 
-        seen: set[str] = set()
-        for album_name in entry.get("albums", []):
+        current: dict[str, str] = {}
+        desired: dict[str, str] = {}
+        desired_sources: dict[str, set[str]] = {}
+        rules = _normalize_rules(entry.get("rules", []))
+
+        for rule in rules:
+            album_name, action = rule["album"], rule["action"]
             matches = by_name.get(album_name, [])
             if not matches:
                 result.missing_albums.append(album_name)
                 if verbose:
-                    print(f"  {album_name}: not found (skipped)")
+                    print(f"  {album_name} -> {ACTION_LABEL[action]}: not found (skipped)")
                 continue
 
-            album_ids: list[str] = []
+            rule_assets: dict[str, str] = {}
             for album in matches:
-                album_ids.extend(api.timeline_asset_ids_for_album(album["id"], user.id))
-            album_ids = [asset_id for asset_id in album_ids if not (asset_id in seen or seen.add(asset_id))]
+                rule_assets.update(api.manageable_assets_for_album(album["id"], user.id))
 
-            if dry_run:
-                result.would_archive += len(album_ids)
-                if verbose:
-                    suffix = "asset" if len(album_ids) == 1 else "assets"
-                    print(f"  {album_name}: {len(album_ids)} {suffix} would be archived")
-            else:
-                archived = api.archive_ids(album_ids) if album_ids else 0
-                result.archived += archived
-                if verbose:
-                    suffix = "asset" if archived == 1 else "assets"
-                    print(f"  {album_name}: {archived} {suffix} archived")
+            if verbose:
+                count = len(rule_assets)
+                suffix = "asset" if count == 1 else "assets"
+                print(f"  {album_name} -> {ACTION_LABEL[action]}: {count} {suffix} matched")
+
+            for asset_id, visibility in rule_assets.items():
+                current.setdefault(asset_id, visibility)
+                previous = desired.get(asset_id)
+                chosen = _desired_action(previous, action)
+                if previous is not None and previous != action:
+                    desired_sources.setdefault(asset_id, set()).update({previous, action})
+                desired[asset_id] = chosen
+
+        result.conflicts = sum(1 for values in desired_sources.values() if len(values) > 1)
+        changes: dict[str, list[str]] = {action: [] for action in ALLOWED_ACTIONS}
+        for asset_id, target in desired.items():
+            if current.get(asset_id) != target:
+                changes[target].append(asset_id)
+
+        result.by_action = {action: len(ids) for action, ids in changes.items()}
+        total = sum(result.by_action.values())
+        if dry_run:
+            result.would_change = total
+        else:
+            for action in ("timeline", "archive", "locked"):
+                ids = changes[action]
+                if ids:
+                    api.set_visibility(ids, action)
+            result.changed = total
+
+        if verbose:
+            print("\n  Planned changes:" if dry_run else "\n  Applied changes:")
+            for action in ("archive", "locked", "timeline"):
+                print(f"    {ACTION_LABEL[action]:8}: {result.by_action[action]}")
+            if result.conflicts:
+                print(f"    Conflicts: {result.conflicts} resolved using Locked > Archive > Timeline")
+            if result.by_action["locked"]:
+                print("    NOTE: Immich removes Locked assets from all albums.")
+                print("          They cannot be automatically restored by this API-key based tool.")
 
     except AppError as exc:
         result.error = str(exc)
@@ -423,10 +562,15 @@ def sync_all(cfg: dict[str, Any], *, dry_run: bool, config_file: Path, verbose: 
 
 def print_summary(results: Iterable[SyncResult], dry_run: bool) -> int:
     results = list(results)
-    total = sum(r.would_archive if dry_run else r.archived for r in results)
+    total = sum(r.would_change if dry_run else r.changed for r in results)
     errors = [r for r in results if r.error]
-    action = "would be archived" if dry_run else "archived"
+    action = "would change visibility" if dry_run else "changed visibility"
     print(f"\nTotal: {total} assets {action}.")
+    totals = {a: sum(r.by_action.get(a, 0) for r in results) for a in ALLOWED_ACTIONS}
+    print(
+        f"Targets: Archive={totals['archive']}, Locked={totals['locked']}, "
+        f"Timeline={totals['timeline']}"
+    )
     if errors:
         print(f"Errors: {len(errors)} user(s).")
         return 1
@@ -463,16 +607,37 @@ def print_api_key_guide(user: DiscoveredUser) -> None:
     for perm in REQUIRED_KEY_PERMISSIONS:
         print(f"     - {perm}")
     print("7. Create the key and copy it.")
-    print("\nThe key will be stored locally with file mode 0600 and is not")
-    print("written to config.json. The key is validated before it is saved.")
+    print("\nThe same key supports Archive, Locked and Timeline rules.")
+    print("Keys are stored locally with file mode 0600 and are not written to config.json.")
 
 
-def show_detected_albums(
-    cfg: dict[str, Any],
-    user: DiscoveredUser,
-    config_file: Path = DEFAULT_CONFIG_FILE,
-) -> None:
-    """Show all Immich server albums visible to the selected user."""
+def print_locked_warning() -> bool:
+    print("\nIMPORTANT - IMMICH LOCKED FOLDER")
+    print("=" * 60)
+    print("Immich removes an asset from ALL albums when it is moved to Locked Folder.")
+    print("Immich also requires an elevated interactive session to browse locked assets.")
+    print("A normal API key therefore cannot automatically reverse a Locked rule later.")
+    print("Existing locked assets must be unlocked/restored from inside Immich.")
+    return input("\nUse Locked for this rule anyway? [y/N]: ").strip().lower() == "y"
+
+
+def choose_action(current: str | None = None) -> str | None:
+    print("\nAction:")
+    print("1) Archive")
+    print("2) Locked")
+    print("3) Timeline / restore from Archive")
+    print("0) Cancel")
+    if current:
+        print(f"Current: {ACTION_LABEL.get(current, current)}")
+    choice = input("Select: ").strip()
+    mapping = {"1": "archive", "2": "locked", "3": "timeline"}
+    action = mapping.get(choice)
+    if action == "locked" and not print_locked_warning():
+        return None
+    return action
+
+
+def show_detected_albums(cfg: dict[str, Any], user: DiscoveredUser, config_file: Path = DEFAULT_CONFIG_FILE) -> None:
     api_key = read_key(user.id, config_file)
     if not api_key:
         print("No API key is configured for this user.")
@@ -490,7 +655,7 @@ def show_detected_albums(
         return
 
     print(f"DETECTED IMMICH ALBUMS - {user.label}")
-    print("=" * 72)
+    print("=" * 76)
     if not albums:
         print("No Immich server albums found for this user.")
         print()
@@ -499,42 +664,57 @@ def show_detected_albums(
         print("and run Reorganize into album for already-uploaded photos.")
         return
 
-    configured = set(cfg.get("users", {}).get(user.id, {}).get("albums", []))
+    configured = {r["album"]: r["action"] for r in _normalize_rules(cfg["users"][user.id].get("rules", []))}
     albums = sorted(albums, key=lambda a: (str(a.get("albumName", "")).casefold(), str(a.get("id", ""))))
     for i, album in enumerate(albums, 1):
         name = album.get("albumName") or "(unnamed)"
         count = album.get("assetCount")
         count_text = "? assets" if count is None else f"{count} {'asset' if count == 1 else 'assets'}"
-        marker = "AUTO" if name in configured else "----"
+        action = configured.get(name)
+        marker = ACTION_MARKER[action] if action else "----"
         print(f"{i:3}. [{marker}] {name} ({count_text})")
 
     print(f"\nDetected: {len(albums)} server album{'s' if len(albums) != 1 else ''}")
-    print("[AUTO] = album name is configured for automatic archiving")
+    print("[ARCH] Archive rule  [LOCK] Locked rule  [TIME] Timeline rule")
+    print("NOTE: assets already moved to Locked are removed from albums by Immich.")
+
+
+def _find_rule(rules: list[dict[str, str]], value: str) -> tuple[int, dict[str, str]] | None:
+    if value.isdigit() and 1 <= int(value) <= len(rules):
+        index = int(value) - 1
+        return index, rules[index]
+    for index, rule in enumerate(rules):
+        if rule["album"] == value:
+            return index, rule
+    return None
+
 
 def manage_user(cfg: dict[str, Any], user: DiscoveredUser, config_file: Path) -> None:
     while True:
         entry = cfg["users"][user.id]
+        entry["rules"] = _normalize_rules(entry.get("rules", []))
         clear()
-        print("IMMICH AUTO ARCHIVE")
-        print("=" * 60)
+        print(f"IMMICH AUTO ARCHIVE v{VERSION}")
+        print("=" * 64)
         print(user.label)
-        print(f"API key:       {format_key_status(cfg, user, config_file)}")
-        print(f"Auto archive:  {'ENABLED' if entry.get('enabled', True) else 'DISABLED'}")
-        print("\nAlbums:")
-        for i, album in enumerate(entry.get("albums", []), 1):
-            print(f"  {i:2}. {album}")
-        if not entry.get("albums"):
+        print(f"API key:      {format_key_status(cfg, user, config_file)}")
+        print(f"Auto rules:   {'ENABLED' if entry.get('enabled', True) else 'DISABLED'}")
+        print("\nRules:")
+        for i, rule in enumerate(entry["rules"], 1):
+            print(f"  {i:2}. {rule['album']:<36.36} -> {ACTION_LABEL[rule['action']]}")
+        if not entry["rules"]:
             print("  (none)")
         print("\n1) Add / replace API key (guided)")
         print("2) Remove API key")
-        print("3) Add album")
-        print("4) Remove album")
-        print("5) Reset albums to defaults")
-        print("6) Sync this user now")
-        print("7) Dry-run this user")
-        print("8) Enable / disable auto archive")
-        print("9) Test API key")
-        print("10) Show detected Immich albums")
+        print("3) Add rule")
+        print("4) Change rule action")
+        print("5) Remove rule")
+        print("6) Reset rules to defaults")
+        print("7) Sync this user now")
+        print("8) Dry-run this user")
+        print("9) Enable / disable auto rules")
+        print("10) Test API key")
+        print("11) Show detected Immich albums")
         print("0) Back")
         choice = input("\nSelect: ").strip().lower()
 
@@ -548,19 +728,15 @@ def manage_user(cfg: dict[str, Any], user: DiscoveredUser, config_file: Path) ->
             api_key = getpass.getpass("Paste API key (input hidden): ").strip()
             if not api_key:
                 print("No key entered.")
-                pause()
-                continue
-            # Validate before storing when possible.
+                pause(); continue
             try:
                 me = ImmichApi(cfg["server_url"], api_key).current_user()
                 if me.get("id") != user.id:
                     print("ERROR: This API key belongs to a different Immich user.")
-                    pause()
-                    continue
+                    pause(); continue
             except AppError as exc:
                 print(f"ERROR: {exc}")
-                pause()
-                continue
+                pause(); continue
             write_key(user.id, api_key, config_file)
             print("API key stored securely (0600).")
             pause()
@@ -571,96 +747,122 @@ def manage_user(cfg: dict[str, Any], user: DiscoveredUser, config_file: Path) ->
             pause()
         elif choice == "3":
             name = input("Album name to add: ").strip()
-            if name and name not in entry["albums"]:
-                entry["albums"].append(name)
-                save_config(cfg, config_file)
-                print(f"Added: {name}")
-            elif name:
-                print("That album is already configured.")
-            pause()
-        elif choice == "4":
-            albums = entry.get("albums", [])
-            if not albums:
-                print("No albums configured.")
-                pause()
+            if not name:
                 continue
-            value = input("Album number or exact name to remove: ").strip()
-            removed = None
-            if value.isdigit() and 1 <= int(value) <= len(albums):
-                removed = albums.pop(int(value) - 1)
-            elif value in albums:
-                albums.remove(value)
-                removed = value
-            if removed:
+            if any(r["album"] == name for r in entry["rules"]):
+                print("That album already has a rule. Use Change rule action.")
+                pause(); continue
+            action = choose_action()
+            if action:
+                entry["rules"].append(_rule(name, action))
                 save_config(cfg, config_file)
-                print(f"Removed: {removed}")
-            else:
-                print("Album not found in configuration.")
+                print(f"Added: {name} -> {ACTION_LABEL[action]}")
+                pause()
+        elif choice == "4":
+            if not entry["rules"]:
+                print("No rules configured."); pause(); continue
+            value = input("Rule number or exact album name: ").strip()
+            found = _find_rule(entry["rules"], value)
+            if not found:
+                print("Rule not found."); pause(); continue
+            _, rule = found
+            old_action = rule["action"]
+            action = choose_action(old_action)
+            if not action:
+                continue
+            if old_action == "locked" and action != "locked":
+                print("\nNOTE: assets already moved to Locked were removed from the album by Immich.")
+                print("Changing this rule cannot bring those existing locked assets back.")
+                print("It only affects assets that are still present in the album.")
+                if input("Continue changing the rule? [y/N]: ").strip().lower() != "y":
+                    continue
+            rule["action"] = action
+            save_config(cfg, config_file)
+            print(f"Changed: {rule['album']} -> {ACTION_LABEL[action]}")
             pause()
         elif choice == "5":
-            entry["albums"] = list(cfg.get("default_albums", DEFAULT_ALBUMS))
+            if not entry["rules"]:
+                print("No rules configured."); pause(); continue
+            value = input("Rule number or exact album name to remove: ").strip()
+            found = _find_rule(entry["rules"], value)
+            if not found:
+                print("Rule not found."); pause(); continue
+            index, rule = found
+            entry["rules"].pop(index)
             save_config(cfg, config_file)
-            print("Album list reset to current defaults.")
+            print(f"Removed rule: {rule['album']}. Existing asset visibility is unchanged.")
             pause()
-        elif choice in {"6", "7"}:
-            dry = choice == "7"
+        elif choice == "6":
+            entry["rules"] = [dict(r) for r in cfg.get("default_rules", DEFAULT_RULES)]
+            save_config(cfg, config_file)
+            print("Rules reset to current defaults.")
+            pause()
+        elif choice in {"7", "8"}:
+            dry = choice == "8"
             print(f"\n{'Dry-run' if dry else 'Sync'} for {user.label}")
             result = sync_user(cfg, user, dry_run=dry, config_file=config_file, verbose=True)
             if result.error:
                 print(f"ERROR: {result.error}")
             else:
-                value = result.would_archive if dry else result.archived
+                value = result.would_change if dry else result.changed
                 print(f"\nTotal: {value}")
             pause()
-        elif choice == "8":
+        elif choice == "9":
             entry["enabled"] = not entry.get("enabled", True)
             save_config(cfg, config_file)
-        elif choice == "9":
+        elif choice == "10":
             ok, detail = validate_api_key(cfg, user, config_file)
             print(f"API key: {'OK' if ok else 'FAILED'} - {detail}")
             pause()
-        elif choice == "10":
-            clear()
-            show_detected_albums(cfg, user, config_file)
-            pause()
+        elif choice == "11":
+            clear(); show_detected_albums(cfg, user, config_file); pause()
 
 
 def edit_defaults(cfg: dict[str, Any], config_file: Path) -> None:
     while True:
         clear()
-        albums = cfg.get("default_albums", [])
-        print("DEFAULT ALBUMS FOR NEW USERS")
-        print("=" * 60)
-        for i, album in enumerate(albums, 1):
-            print(f"  {i:2}. {album}")
-        print("\n1) Add default album")
-        print("2) Remove default album")
-        print("3) Restore built-in defaults")
+        rules = _normalize_rules(cfg.get("default_rules", []))
+        cfg["default_rules"] = rules
+        print("DEFAULT RULES FOR NEW USERS")
+        print("=" * 64)
+        for i, rule in enumerate(rules, 1):
+            print(f"  {i:2}. {rule['album']:<36.36} -> {ACTION_LABEL[rule['action']]}")
+        print("\n1) Add default rule")
+        print("2) Change default rule action")
+        print("3) Remove default rule")
+        print("4) Restore built-in defaults (all Archive)")
         print("0) Back")
         choice = input("\nSelect: ").strip()
         if choice == "0":
             return
         if choice == "1":
             name = input("Album name: ").strip()
-            if name and name not in albums:
-                albums.append(name)
-                save_config(cfg, config_file)
+            if name and not any(r["album"] == name for r in rules):
+                action = choose_action()
+                if action:
+                    rules.append(_rule(name, action)); save_config(cfg, config_file)
         elif choice == "2":
-            value = input("Album number or exact name: ").strip()
-            if value.isdigit() and 1 <= int(value) <= len(albums):
-                albums.pop(int(value) - 1)
-                save_config(cfg, config_file)
-            elif value in albums:
-                albums.remove(value)
-                save_config(cfg, config_file)
+            value = input("Rule number or exact album name: ").strip()
+            found = _find_rule(rules, value)
+            if found:
+                _, rule = found
+                action = choose_action(rule["action"])
+                if action:
+                    rule["action"] = action; save_config(cfg, config_file)
         elif choice == "3":
-            cfg["default_albums"] = list(DEFAULT_ALBUMS)
+            value = input("Rule number or exact album name: ").strip()
+            found = _find_rule(rules, value)
+            if found:
+                index, _ = found; rules.pop(index); save_config(cfg, config_file)
+        elif choice == "4":
+            cfg["default_rules"] = [dict(r) for r in DEFAULT_RULES]
             save_config(cfg, config_file)
 
 
 def show_status(cfg: dict[str, Any], users: list[DiscoveredUser], config_file: Path) -> None:
     print("IMMICH AUTO ARCHIVE STATUS")
     print("=" * 70)
+    print(f"Version: {VERSION}   Config schema: {cfg.get('version')}")
     print(f"Server: {cfg['server_url']}")
     print(f"Configured interval: {cfg.get('sync_interval_minutes', 5)} minutes")
     print()
@@ -668,7 +870,7 @@ def show_status(cfg: dict[str, Any], users: list[DiscoveredUser], config_file: P
         entry = cfg["users"].get(user.id, {})
         status = format_key_status(cfg, user, config_file)
         enabled = "enabled" if entry.get("enabled", True) else "disabled"
-        print(f"- {user.label}: {status}, {enabled}, {len(entry.get('albums', []))} albums")
+        print(f"- {user.label}: {status}, {enabled}, {len(entry.get('rules', []))} rules")
     if shutil.which("systemctl"):
         print("\nTimer:")
         subprocess.run(["systemctl", "status", "immich-auto-archive.timer", "--no-pager"], check=False)
@@ -679,10 +881,9 @@ def doctor(cfg: dict[str, Any], config_file: Path) -> int:
     print("Immich Auto Archive doctor")
     print("=" * 60)
     print(f"Version: {VERSION}")
-    print(f"Config:  {config_file}")
+    print(f"Config:  {config_file} (schema {cfg.get('version')})")
     print(f"Server:  {cfg['server_url']}")
     print(f"Python:  {sys.version.split()[0]}")
-
     try:
         users, source, _ = refresh_users(cfg, config_file)
         print(f"Users:   OK ({len(users)} discovered via {source})")
@@ -691,7 +892,6 @@ def doctor(cfg: dict[str, Any], config_file: Path) -> int:
         users = []
         failures += 1
 
-    # Server connectivity can be tested with a user key if one exists.
     tested = False
     for user in users:
         if read_key(user.id, config_file):
@@ -709,6 +909,7 @@ def doctor(cfg: dict[str, Any], config_file: Path) -> int:
         print(f"Timer:   {enabled or 'not installed'}")
     else:
         print("Timer:   SKIP (systemctl not available)")
+    print("Locked:  supported as a one-way album -> Locked Folder rule")
     return 1 if failures else 0
 
 
@@ -728,8 +929,9 @@ def menu(cfg: dict[str, Any], config_file: Path) -> int:
             return 1
         clear()
         print(f"IMMICH AUTO ARCHIVE v{VERSION}")
-        print("=" * 72)
+        print("=" * 76)
         print(f"Immich: {cfg['server_url']}   User discovery: {source}")
+        print("Rules: Archive / Locked / Timeline")
         print()
         for i, user in enumerate(users, 1):
             entry = cfg["users"][user.id]
@@ -739,10 +941,10 @@ def menu(cfg: dict[str, Any], config_file: Path) -> int:
             else:
                 key_state = "NO KEY"
             enabled = "ON" if entry.get("enabled", True) else "OFF"
-            print(f"{i:2}) {user.label:<42.42} [{key_state:7}] [{enabled}] {len(entry.get('albums', []))} albums")
+            print(f"{i:2}) {user.label:<42.42} [{key_state:7}] [{enabled}] {len(entry.get('rules', []))} rules")
         print("\nA) Sync all now")
         print("D) Dry-run all")
-        print("F) Edit default albums")
+        print("F) Edit default rules")
         print("R) Refresh users")
         print("S) Status")
         print("L) Logs")
@@ -755,12 +957,10 @@ def menu(cfg: dict[str, Any], config_file: Path) -> int:
             manage_user(cfg, users[int(choice) - 1], config_file)
         elif choice == "a":
             results = sync_all(cfg, dry_run=False, config_file=config_file, verbose=True)
-            print_summary(results, False)
-            pause()
+            print_summary(results, False); pause()
         elif choice == "d":
             results = sync_all(cfg, dry_run=True, config_file=config_file, verbose=True)
-            print_summary(results, True)
-            pause()
+            print_summary(results, True); pause()
         elif choice == "f":
             edit_defaults(cfg, config_file)
         elif choice == "r":
@@ -774,10 +974,10 @@ def menu(cfg: dict[str, Any], config_file: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Automatically archive assets from selected Immich albums.")
+    parser = argparse.ArgumentParser(description="Apply automatic Immich album visibility rules.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_FILE, help="Path to config.json")
     parser.add_argument("--sync", action="store_true", help="Synchronize all configured users now")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be archived without changing anything")
+    parser.add_argument("--dry-run", action="store_true", help="Show visibility changes without changing anything")
     parser.add_argument("--status", action="store_true", help="Show configuration and timer status")
     parser.add_argument("--doctor", action="store_true", help="Test installation, user discovery and configured API keys")
     parser.add_argument("--refresh-users", action="store_true", help="Refresh discovered Immich users")
@@ -802,9 +1002,9 @@ def main(argv: list[str] | None = None) -> int:
             errors = [r for r in results if r.error]
             for result in errors:
                 print(f"ERROR [{result.label}]: {result.error}")
-            total = sum(r.would_archive if args.dry_run else r.archived for r in results)
+            total = sum(r.would_change if args.dry_run else r.changed for r in results)
             if total:
-                print(f"Immich Auto Archive: {total} assets {'would be archived' if args.dry_run else 'archived'}.")
+                print(f"Immich Auto Archive: {total} asset visibility changes {'planned' if args.dry_run else 'applied'}.")
             return 1 if errors else 0
         return print_summary(results, args.dry_run)
     return menu(cfg, args.config)
