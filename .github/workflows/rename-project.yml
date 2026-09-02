@@ -1,0 +1,68 @@
+name: Rename project internals
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/rename-request'
+
+permissions:
+  contents: write
+
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rename Immich Auto Archive to Immich Album Rules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          git mv src/immich_auto_archive.py src/immich_album_rules.py
+          git mv systemd/immich-auto-archive.service systemd/immich-album-rules.service
+          git mv systemd/immich-auto-archive.timer systemd/immich-album-rules.timer
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('src/immich_album_rules.py')
+          text = source.read_text(encoding='utf-8')
+          text = text.replace('Immich Auto Archive - apply automatic visibility rules to Immich albums.', 'Immich Album Rules - apply automatic visibility rules to Immich albums.')
+          text = text.replace('DEFAULT_CONFIG_DIR = Path(os.environ.get("IMMICH_AUTO_ARCHIVE_CONFIG_DIR", "/etc/immich-auto-archive"))', 'DEFAULT_CONFIG_DIR = Path(os.environ.get("IMMICH_ALBUM_RULES_CONFIG_DIR", os.environ.get("IMMICH_AUTO_ARCHIVE_CONFIG_DIR", "/etc/immich-album-rules")))')
+          text = text.replace('Immich Auto Archive', 'Immich Album Rules')
+          text = text.replace('IMMICH AUTO ARCHIVE', 'IMMICH ALBUM RULES')
+          text = text.replace('immich-auto-archive.timer', 'immich-album-rules.timer')
+          text = text.replace('immich-auto-archive.service', 'immich-album-rules.service')
+          source.write_text(text, encoding='utf-8')
+
+          tests = Path('tests/test_core.py')
+          text = tests.read_text(encoding='utf-8')
+          text = text.replace('"iaa", Path(__file__).parents[1] / "src" / "immich_auto_archive.py"', '"iar", Path(__file__).parents[1] / "src" / "immich_album_rules.py"')
+          text = text.replace('iaa = importlib.util.module_from_spec(SPEC)', 'iar = importlib.util.module_from_spec(SPEC)')
+          text = text.replace('sys.modules["iaa"] = iaa', 'sys.modules["iar"] = iar')
+          text = text.replace('SPEC.loader.exec_module(iaa)', 'SPEC.loader.exec_module(iar)')
+          text = text.replace('iaa.', 'iar.')
+          tests.write_text(text, encoding='utf-8')
+
+          for filename in ('systemd/immich-album-rules.service', 'systemd/immich-album-rules.timer'):
+              path = Path(filename)
+              text = path.read_text(encoding='utf-8').replace('Immich Auto Archive', 'Immich Album Rules').replace('immich-auto-archive', 'immich-album-rules')
+              path.write_text(text, encoding='utf-8')
+
+          license_file = Path('LICENSE')
+          license_file.write_text(license_file.read_text(encoding='utf-8').replace('Immich Auto Archive contributors', 'Immich Album Rules contributors'), encoding='utf-8')
+          PY
+
+          python3 -m unittest discover -s tests -v
+          python3 -m py_compile src/immich_album_rules.py
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Rename project to Immich Album Rules"
+          git push origin HEAD:main
